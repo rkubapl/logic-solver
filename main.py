@@ -1,10 +1,29 @@
 import copy
 from enum import Enum
 
+class color:
+   PURPLE = '\033[95m'
+   CYAN = '\033[96m'
+   DARKCYAN = '\033[36m'
+   BLUE = '\033[94m'
+   GREEN = '\033[92m'
+   YELLOW = '\033[93m'
+   RED = '\033[91m'
+   BOLD = '\033[1m'
+   UNDERLINE = '\033[4m'
+   END = '\033[0m'
+
 class Type(Enum):
     TERM = 1
     UNARY = 2
     BINARY = 3
+
+operators = {
+    "I": {"weight": 6, "type": Type.BINARY, "print_as": "⇒"},
+    "|": {"weight": 5, "type": Type.BINARY, "print_as": "∨"},
+    "&": {"weight": 4, "type": Type.BINARY, "print_as": "∧"},
+    "!": {"weight": 3, "type": Type.UNARY, "print_as": "¬"}
+}
 
 class Expression:
     def __init__(self, left, right, operator, type):
@@ -12,18 +31,30 @@ class Expression:
         self.right = right
         self.operator = operator
         self.type = type
+        self.applied = False #highlight to which expression was applied a rule
 
-    def to_string(self):
+    def set_applied(self, applied):
+        self.applied = applied
+
+    def to_string(self, color_apply = True):
+        symbol_string = operators[self.operator]["print_as"] if self.operator is not None else ""
+        res = ""
         if self.type == Type.BINARY:
-            return "(" + self.left.to_string() + " " + self.operator + " " + self.right.to_string() + ")"
-        if self.type == Type.UNARY:
-            return self.operator + self.right.to_string()
-        return self.right
+            res = "(" + self.left.to_string(False) + " " + symbol_string + " " + self.right.to_string(False) + ")"
+        elif self.type == Type.UNARY:
+            res = symbol_string + self.right.to_string(False)
+        else:
+            res = self.right
+
+        if self.applied and color_apply:
+            return color.RED + res + color.END
+        else:
+            return res
 
 class Sequent:
     def __init__(self, ant, con):
-        self.ant = ant #antecedents
-        self.con = con #consequents
+        self.ant = ant #antecedents (assumptions)
+        self.con = con #consequents (propositions)
         self.check_if_axiom()
 
     def check_if_axiom(self):
@@ -43,14 +74,16 @@ class Sequent:
         self.axiom = False
 
     def to_string(self):
-        return ("(AXIOM) " if self.axiom else "") + (", ".join([exp.to_string() for exp in self.ant])) + " |- " + (", ".join([exp.to_string() for exp in self.con]))
+        res = ""
+        if self.axiom:
+            res += "(AXIOM) "
+        if len(self.ant) > 0:
+            res += ", ".join([exp.to_string() for exp in self.ant]) + " "
+        res += "⊢"
+        if len(self.con) > 0:
+            res += " " + ", ".join([exp.to_string() for exp in self.con])
+        return res
 
-operators = {
-    "⇒": {"weight": 6, "type": Type.BINARY},
-    "|": {"weight": 5, "type": Type.BINARY},
-    "&": {"weight": 4, "type": Type.BINARY},
-    "!": {"weight": 3, "type": Type.UNARY},
-}
 
 def parse(text: str):
     #https://github.com/PranayB003/gentzen/blob/main/parse.go
@@ -111,20 +144,20 @@ def parse(text: str):
 #ant |- con
 
 ant_rules = {
-    "⇒": {"output": [{"con": ["A"]},{"ant": ["B"]}]},
+    "I": {"output": [{"con": ["A"]},{"ant": ["B"]}]},
     "&": {"output": [{"ant": ["A", "B"]}]},
     "|": {"output": [{"ant": ["A"]},{"ant": ["B"]}]},
     "!": {"output": [{"con": ["B"]}]}
 }
 
 con_rules = {
-    "⇒": {"output": [{"ant": ["A"], "con": ["B"]}]},
+    "I": {"output": [{"ant": ["A"], "con": ["B"]}]},
     "&": {"output": [{"con": ["A"]},{"con": ["B"]}]},
     "|": {"output": [{"con": ["A", "B"]}]},
     "!": {"output": [{"ant": ["B"]}]}
 }
 
-def apply_rule(seq: Sequent, expr: Expression, rule):
+def apply_rule(seq: Sequent, expr: Expression, rule) -> list[Sequent]:
     res_seqs = []
     for output in rule["output"]:
         new_seq = copy.deepcopy(seq)
@@ -136,10 +169,11 @@ def apply_rule(seq: Sequent, expr: Expression, rule):
         res_seqs.append(new_seq)
     return res_seqs
 
-def continue_proof(seq: Sequent):
+def continue_proof(seq: Sequent) -> tuple[str, list[Sequent]]:
     #first iteration - look for rules which gives one output
     #second iteration - take everything which isn't term
     for only_one_output in [True, False]:
+        j = 0
         for expressions, rules in [[seq.ant, ant_rules], [seq.con, con_rules]]:
             for i, expr in enumerate(expressions):
                 if expr.type == Type.TERM:
@@ -150,12 +184,16 @@ def continue_proof(seq: Sequent):
                 if only_one_output and len(rule["output"]) != 1:
                     continue
 
+                #found rule
+                expr.applied = True
+                old_seq = seq.to_string() + f" ({operators[expr.operator]['print_as']} {['L', 'R'][j]})"
+
                 cur_expr = expressions.pop(i)
-                return apply_rule(seq, cur_expr, rule)
+                return old_seq, apply_rule(seq, cur_expr, rule)
+            j += 1
+    return "", [] #empty array means there is no expression in sequent and sequent isn't axiom, which means proof is unsuccessful
 
-    return None
-
-#Example: (p⇒(q⇒r))|-(q⇒(p⇒r))
+#Example: (pI(qIr))|-(qI(pIr))
 input_str = input("> ")
 
 str_split = input_str.replace(" ", "").split("|-")
@@ -170,37 +208,37 @@ else:
 left = [parse(expr) for expr in left_str.split(",")] if left_str else []
 right = [parse(expr) for expr in right_str.split(",")] if right_str else []
 
-sequent = Sequent(left, right)
-
-sequents = [sequent]
-frames = [sequent.to_string()]
+sequents = [Sequent(left, right)]
+frames = []
 
 while True:
-    new_sequents = []
+    res_sequents: list[Sequent] = [] #resulting sequents after applying rule to each
+    old_seqs: list[str] = [] #sequents before applying rules with highlighted expression
 
     for seq in sequents:
-        if seq.axiom:
-            new_sequents.append(seq)
+        if seq.axiom: #if sequent is axiom, exclude it from next frames
+            old_seqs.append(seq.to_string())
             continue
 
-        new_seqs = continue_proof(seq)
-
-        if new_seqs is None:
+        old_seq, new_seqs = continue_proof(seq)
+        if len(new_seqs) == 0:
             print("Proof unsuccessful")
             exit(0)
 
-        new_sequents.extend(new_seqs)
+        res_sequents.extend(new_seqs)
+        old_seqs.append(old_seq)
 
-    frames.append("        ".join([seq.to_string() for seq in new_sequents]))
+    frames.append("        ".join(old_seqs))
+    sequents = res_sequents
 
-    all_axioms = sum([1 for seq in new_sequents if seq.axiom])
-    if all_axioms == len(new_sequents):
+    all_axioms = sum([1 for seq in res_sequents if seq.axiom])
+    if all_axioms == len(res_sequents):
         break
 
-    sequents = new_sequents
 
+frames.append("        ".join([seq.to_string() for seq in sequents]))
 frames.reverse()
 
 for i, frame in enumerate(frames):
-    print(f"FRAME {len(frames)-i}")
+    print(color.UNDERLINE + f"FRAME {len(frames)-i}" + color.END)
     print(frame)
